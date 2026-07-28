@@ -118,7 +118,7 @@ def resumir_historico(historico):
     for tentativa in range(1, 4):
         resposta = client.messages.create(
             model=MODEL,
-            max_tokens=4096,
+            max_tokens=LIMITE_TOKENS,
             system=(
                 "Resuma a conversa abaixo de forma concisa, preservando fatos, decisões "
                 "e contexto necessário para dar continuidade à conversa. Não invente informação."
@@ -188,7 +188,6 @@ def main():
         while True:
             print("\nClaude: ", end="", flush=True)
 
-            conteudo_resposta = []
             resposta_texto = ""
 
             with client.messages.stream(
@@ -199,30 +198,13 @@ def main():
                 tools=TOOLS
             ) as stream:
                 for evento in stream:
-                    # Coleta blocos de conteúdo (text, tool_use, etc)
-                    if evento.type == "content_block_start":
-                        conteudo_resposta.append(evento.content_block)
+                    if evento.type == "content_block_delta" and evento.delta.type == "text_delta":
+                        print(evento.delta.text, end="", flush=True)
+                        resposta_texto += evento.delta.text
 
-                    # Processa eventos de delta (texto ou JSON)
-                    elif evento.type == "content_block_delta":
-                        if evento.delta.type == "text_delta":
-                            texto = evento.delta.text
-                            print(texto, end="", flush=True)
-                            resposta_texto += texto
-
-                        elif evento.delta.type == "input_json_delta":
-                            # Atualiza JSON de tool_use durante streaming
-                            if conteudo_resposta:
-                                ultimo_bloco = conteudo_resposta[-1]
-                                if hasattr(ultimo_bloco, "input"):
-                                    if not hasattr(ultimo_bloco, "_input_str"):
-                                        ultimo_bloco._input_str = ""
-                                    ultimo_bloco._input_str += evento.delta.input_json
-
-                # Obtém a resposta final após o stream
                 response = stream.get_final_message()
 
-            print("\n")  # Nova linha após streaming
+            print("\n")
 
             if response.stop_reason == "max_tokens":
                 print("⚠️ Erro: a resposta foi truncada por atingir o limite de tokens.")
@@ -231,7 +213,6 @@ def main():
                 break
 
             if response.stop_reason == "tool_use":
-                # Guarda a solicitação de tool_use do modelo no histórico
                 historico.append({"role": "assistant", "content": response.content})
 
                 resultados_tools = []
@@ -245,14 +226,16 @@ def main():
                             "content": json.dumps(resultado, ensure_ascii=False)
                         })
 
-                # Envia o resultado das tools de volta e chama a API novamente
                 historico.append({"role": "user", "content": resultados_tools})
                 continue
 
             if response.stop_reason == "end_turn":
-                # Adiciona a resposta do Claude ao histórico para o próximo turno
-                historico.append({"role": "assistant", "content": resposta_texto if resposta_texto else response.content[0].text})
+                historico.append({"role": "assistant", "content": resposta_texto})
                 break
+
+            print(f"⚠️ stop_reason inesperado: '{response.stop_reason}'. Encerrando turno.\n")
+            historico.pop()
+            break
 
 if __name__ == "__main__":
     main()
