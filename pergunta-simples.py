@@ -12,9 +12,7 @@ load_dotenv()
 
 API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
-client = anthropic.Anthropic(
-    api_key=API_KEY
-)
+client = anthropic.Anthropic(api_key=API_KEY)
 
 MODEL = "claude-haiku-4-5-20251001"
 LIMITE_TOKENS = 4096
@@ -72,6 +70,7 @@ TOOLS = [
     }
 ]
 
+
 def buscar_endereco_cep(cep):
     """Busca o endereço vinculado a um CEP na base fictícia."""
     cep_normalizado = cep.strip()
@@ -79,6 +78,7 @@ def buscar_endereco_cep(cep):
     if endereco:
         return {"cep": cep_normalizado, "endereco": endereco}
     return {"erro": f"CEP {cep_normalizado} não encontrado na base."}
+
 
 def somar_produtos_categoria(categoria):
     """Soma o valor total dos produtos de uma categoria na base fictícia."""
@@ -94,6 +94,7 @@ def somar_produtos_categoria(categoria):
         "produtos": [p["nome"] for p in produtos]
     }
 
+
 def executar_tool(nome, entrada):
     """Despacha a execução da tool solicitada pelo modelo."""
     if nome == "buscar_endereco_cep":
@@ -101,6 +102,7 @@ def executar_tool(nome, entrada):
     if nome == "somar_produtos_categoria":
         return somar_produtos_categoria(entrada["categoria"])
     return {"erro": f"Tool '{nome}' não reconhecida."}
+
 
 def resumir_historico(historico):
     """Resume os turnos mais antigos do histórico, mantendo os mais recentes intactos."""
@@ -141,8 +143,95 @@ def resumir_historico(historico):
     novo_historico.extend(recentes)
     return novo_historico
 
+
+def selecionar_modo():
+    """Solicita ao usuário a escolha entre streaming e sem streaming."""
+    while True:
+        escolha = input("Usar streaming? [s/n]: ").strip().lower()
+        if escolha in ("s", "n"):
+            return escolha == "s"
+        print("Opção inválida. Digite 's' para sim ou 'n' para não.\n")
+
+
+def construir_system_com_cache(system_prompt):
+    """Converte o system prompt em formato de lista com cache_control."""
+    if not system_prompt:
+        return system_prompt
+    return [{"type": "text", "text": system_prompt, "cache_control": {"type": "ephemeral"}}]
+
+
+def construir_mensagens_com_cache(historico):
+    """Retorna cópia do histórico com cache_control adicionado à última mensagem."""
+    if not historico:
+        return historico
+
+    msgs = list(historico)
+    ultima = msgs[-1]
+    conteudo = ultima["content"]
+
+    if isinstance(conteudo, str):
+        novo_conteudo = [{"type": "text", "text": conteudo, "cache_control": {"type": "ephemeral"}}]
+    elif isinstance(conteudo, list):
+        novo_conteudo = list(conteudo)
+        ultimo_bloco = dict(novo_conteudo[-1])
+        ultimo_bloco["cache_control"] = {"type": "ephemeral"}
+        novo_conteudo[-1] = ultimo_bloco
+    else:
+        return historico
+
+    msgs[-1] = {"role": ultima["role"], "content": novo_conteudo}
+    return msgs
+
+
+def chamar_com_streaming(historico, system_prompt):
+    """Chama a API com streaming e imprime a resposta em tempo real."""
+    resposta_texto = ""
+
+    with client.messages.stream(
+        model=MODEL,
+        max_tokens=LIMITE_TOKENS,
+        system=system_prompt,
+        messages=historico,
+        tools=TOOLS
+    ) as stream:
+        for evento in stream:
+            if evento.type == "content_block_delta" and evento.delta.type == "text_delta":
+                print(evento.delta.text, end="", flush=True)
+                resposta_texto += evento.delta.text
+
+        response = stream.get_final_message()
+
+    return response, resposta_texto
+
+
+def chamar_sem_streaming(historico, system_prompt):
+    """Chama a API sem streaming com prompt caching e imprime a resposta completa."""
+    response = client.messages.create(
+        model=MODEL,
+        max_tokens=LIMITE_TOKENS,
+        system=construir_system_com_cache(system_prompt),
+        messages=construir_mensagens_com_cache(historico),
+        tools=TOOLS
+    )
+
+    resposta_texto = next((b.text for b in response.content if b.type == "text"), "")
+    print(resposta_texto, end="")
+
+    uso = response.usage
+    cache_criados = getattr(uso, "cache_creation_input_tokens", 0) or 0
+    cache_lidos = getattr(uso, "cache_read_input_tokens", 0) or 0
+    if cache_criados or cache_lidos:
+        print(f"\n  [cache — criados: {cache_criados} tokens, lidos: {cache_lidos} tokens]", end="")
+
+    return response, resposta_texto
+
+
 def main():
     print("Conversa iniciada. Digite 'exit' para encerrar.\n")
+
+    usar_streaming = selecionar_modo()
+    chamar_api = chamar_com_streaming if usar_streaming else chamar_sem_streaming
+    print(f"Modo: {'streaming' if usar_streaming else 'sem streaming (com cache)'}\n")
 
     system_prompt = input("Prompt de sistema (opcional, Enter para pular): ").strip()
     print()
@@ -188,21 +277,7 @@ def main():
         while True:
             print("\nClaude: ", end="", flush=True)
 
-            resposta_texto = ""
-
-            with client.messages.stream(
-                model=MODEL,
-                max_tokens=LIMITE_TOKENS,
-                system=system_prompt,
-                messages=historico,
-                tools=TOOLS
-            ) as stream:
-                for evento in stream:
-                    if evento.type == "content_block_delta" and evento.delta.type == "text_delta":
-                        print(evento.delta.text, end="", flush=True)
-                        resposta_texto += evento.delta.text
-
-                response = stream.get_final_message()
+            response, resposta_texto = chamar_api(historico, system_prompt)
 
             print("\n")
 
@@ -236,6 +311,7 @@ def main():
             print(f"⚠️ stop_reason inesperado: '{response.stop_reason}'. Encerrando turno.\n")
             historico.pop()
             break
+
 
 if __name__ == "__main__":
     main()
