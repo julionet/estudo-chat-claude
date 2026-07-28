@@ -194,24 +194,23 @@ def main():
             with client.messages.stream(
                 model=MODEL,
                 max_tokens=LIMITE_TOKENS,
-                #cache_control={"type": "ephemeral"},
                 system=system_prompt,
                 messages=historico,
                 tools=TOOLS
             ) as stream:
                 for evento in stream:
-                    # Processa eventos de texto com streaming
-                    if evento.type == "content_block_delta":
+                    # Coleta blocos de conteúdo (text, tool_use, etc)
+                    if evento.type == "content_block_start":
+                        conteudo_resposta.append(evento.content_block)
+
+                    # Processa eventos de delta (texto ou JSON)
+                    elif evento.type == "content_block_delta":
                         if evento.delta.type == "text_delta":
                             texto = evento.delta.text
                             print(texto, end="", flush=True)
                             resposta_texto += texto
 
-                    # Coleta blocos de conteúdo (text, tool_use, etc)
-                    elif evento.type == "content_block_start":
-                        conteudo_resposta.append(evento.content_block)
-                    elif evento.type == "content_block_delta":
-                        if evento.delta.type == "input_json_delta":
+                        elif evento.delta.type == "input_json_delta":
                             # Atualiza JSON de tool_use durante streaming
                             if conteudo_resposta:
                                 ultimo_bloco = conteudo_resposta[-1]
