@@ -17,7 +17,7 @@ client = anthropic.Anthropic(
 )
 
 MODEL = "claude-haiku-4-5-20251001"
-LIMITE_TOKENS = 1024
+LIMITE_TOKENS = 4096
 LIMIAR_RESUMO = 0.75  # dispara o resumo ao atingir esta fração do limite de tokens
 MENSAGENS_RECENTES = 4  # últimos turnos (user+assistant) mantidos intactos, sem resumir
 
@@ -189,6 +189,7 @@ def main():
             response = client.messages.create(
                 model=MODEL,
                 max_tokens=LIMITE_TOKENS,
+                cache_control={"type": "ephemeral"}, # habilita o cache prompting automático do Claude, evitando repetir instruções de sistema
                 system=system_prompt,  # parâmetro separado da API, não faz parte de "messages"
                 messages=historico,  # envia todo o histórico a cada chamada
                 tools=TOOLS
