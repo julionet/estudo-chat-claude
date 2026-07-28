@@ -186,19 +186,48 @@ def main():
 
         # Loop de chamadas à API: repete enquanto o modelo solicitar o uso de tools
         while True:
-            response = client.messages.create(
+            print("\nClaude: ", end="", flush=True)
+
+            conteudo_resposta = []
+            resposta_texto = ""
+
+            with client.messages.stream(
                 model=MODEL,
                 max_tokens=LIMITE_TOKENS,
-                cache_control={"type": "ephemeral"}, # habilita o cache prompting automático do Claude, evitando repetir instruções de sistema
-                system=system_prompt,  # parâmetro separado da API, não faz parte de "messages"
-                messages=historico,  # envia todo o histórico a cada chamada
+                #cache_control={"type": "ephemeral"},
+                system=system_prompt,
+                messages=historico,
                 tools=TOOLS
-            )
+            ) as stream:
+                for evento in stream:
+                    # Processa eventos de texto com streaming
+                    if evento.type == "content_block_delta":
+                        if evento.delta.type == "text_delta":
+                            texto = evento.delta.text
+                            print(texto, end="", flush=True)
+                            resposta_texto += texto
+
+                    # Coleta blocos de conteúdo (text, tool_use, etc)
+                    elif evento.type == "content_block_start":
+                        conteudo_resposta.append(evento.content_block)
+                    elif evento.type == "content_block_delta":
+                        if evento.delta.type == "input_json_delta":
+                            # Atualiza JSON de tool_use durante streaming
+                            if conteudo_resposta:
+                                ultimo_bloco = conteudo_resposta[-1]
+                                if hasattr(ultimo_bloco, "input"):
+                                    if not hasattr(ultimo_bloco, "_input_str"):
+                                        ultimo_bloco._input_str = ""
+                                    ultimo_bloco._input_str += evento.delta.input_json
+
+                # Obtém a resposta final após o stream
+                response = stream.get_final_message()
+
+            print("\n")  # Nova linha após streaming
 
             if response.stop_reason == "max_tokens":
-                print("\n⚠️ Erro: a resposta foi truncada por atingir o limite de tokens.")
+                print("⚠️ Erro: a resposta foi truncada por atingir o limite de tokens.")
                 print("Aumente o valor de max_tokens e tente novamente.\n")
-                # Remove a última mensagem do usuário para não corromper o histórico
                 historico.pop()
                 break
 
@@ -209,7 +238,7 @@ def main():
                 resultados_tools = []
                 for bloco in response.content:
                     if bloco.type == "tool_use":
-                        print(f"\n🔧 Executando tool '{bloco.name}' com entrada {bloco.input}...\n")
+                        print(f"🔧 Executando tool '{bloco.name}' com entrada {bloco.input}...\n")
                         resultado = executar_tool(bloco.name, bloco.input)
                         resultados_tools.append({
                             "type": "tool_result",
@@ -222,11 +251,8 @@ def main():
                 continue
 
             if response.stop_reason == "end_turn":
-                resposta = response.content[0].text
-                print(f"\nClaude: {resposta}\n")
-
                 # Adiciona a resposta do Claude ao histórico para o próximo turno
-                historico.append({"role": "assistant", "content": resposta})
+                historico.append({"role": "assistant", "content": resposta_texto if resposta_texto else response.content[0].text})
                 break
 
 if __name__ == "__main__":
