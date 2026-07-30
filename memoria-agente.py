@@ -41,7 +41,7 @@ except ImportError:
 # Configuracao geral
 # --------------------------------------------------------------------------
 
-MODEL = os.environ.get("CLAUDE_MODEL", "claude-sonnet-5")
+MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 DB_PATH = Path(__file__).parent / "external_storage.db"
 SKILLS_DIR = Path(__file__).parent / "skills_local"
 
