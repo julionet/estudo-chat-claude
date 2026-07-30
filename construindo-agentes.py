@@ -64,7 +64,7 @@ _MODO_ENV = carregar_dotenv()
 # Cliente Anthropic
 # ------------------------------------------------------------------------
 
-MODEL_NAME = "claude-sonnet-5"
+MODEL_NAME = "claude-haiku-4-5-20251001"
 
 client = None
 LIVE_MODE = False
