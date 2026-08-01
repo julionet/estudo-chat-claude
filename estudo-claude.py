@@ -1,4 +1,5 @@
 import os
+import json
 import anthropic
 from dotenv import load_dotenv
 
@@ -9,15 +10,72 @@ MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 MAX_TOKENS = 4096
 
+TOOLS = [
+    {
+        "name": "obter_informacoes_usuario",
+        "description": "Retorna informações de um usuário fictício de acordo com um ID. Use quando for pedido para buscar informações de um usuário não quando for pedido para buscar total de compras.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "ID do usuário fictício. Ex: 100"}
+            },
+            "required": ["user_id"]
+        }
+    },
+    {
+        "name": "obter_valor_total_compras",
+        "description": "Retorna o valor total de compras de um usuário fictício. Use quando for pedido para buscar o valor total de compras de um usuário não quando for pedido para buscar dados ou informações.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "user_id": {"type": "string", "description": "ID do usuário fictício. Ex: 100"}
+            },
+            "required": ["user_id"]
+        }
+    }
+]
+
 client = anthropic.Anthropic(api_key=API_KEY)
 
+def create_system_cache(system_prompt):
+    return [{
+        "type": "text", 
+        "text": system_prompt, 
+        "cache_control": {"type": "ephemeral"}
+    }]
+
+def use_no_streaming_response(system_prompt, history):
+    print("\nClaude: ", end="", flush=True)
+
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=create_system_cache(system_prompt),
+            messages=history,
+            tools=TOOLS
+        )
+    except Exception as e:
+        print(f"\nOcorreu um erro ao gerar a resposta: {e}")
+        return None, None
+
+    print(f"cache_creation_input_tokens: {response.usage.cache_creation_input_tokens}")
+    print(f"cache_read_input_tokens: {response.usage.cache_read_input_tokens}")
+
+    resposta = next((b.text for b in response.content if b.type == "text"), "")
+    print(resposta, end="", flush=True)
+
+    return response, resposta
+
 def use_streaming_response(system_prompt, history):
+    print("\nClaude: ", end="", flush=True)
+
     resposta = ""
 
     with client.messages.stream(
         model=MODEL,
         max_tokens=MAX_TOKENS,
-        system=system_prompt,
+        system=create_system_cache(system_prompt),
         messages=history
     ) as stream:
         for event in stream:
@@ -29,15 +87,29 @@ def use_streaming_response(system_prompt, history):
 
     return response, resposta
 
+def example_tool1(input_data):
+    return { "nome": "Jose", "idade": 30, "cidade": "Sao Paulo" }
+
+def example_tool2(input_data):
+    return { "valor_compras": 200.0 }
+
+def execute_tool(tool_name, tool_input):
+    if tool_name == "example_tool1":
+        return example_tool1(tool_input)
+    elif tool_name == "example_tool2":
+        return example_tool2(tool_input)
+    return {"erro": f"Tool '{tool_name}' não reconhecida."}
+
 def main():
     system_prompt = input("Digite o prompt do sistema: ")
-    print()
 
     history = []
+
     while True:
+        print()
         user_prompt = input("Voce: ").strip()
 
-        if user_prompt.lower() == "sair":
+        if user_prompt.lower() in ["sair", "exit", "quit"]:
             break
 
         if not user_prompt:
@@ -46,14 +118,36 @@ def main():
 
         history.append({"role": "user", "content": user_prompt})
 
-        print("\nClaude: ", end="", flush=True)
+        while True:
+            response, content = use_no_streaming_response(system_prompt, history)
 
-        response, content = use_streaming_response(system_prompt, history)
+            if response is None:
+                break
 
-        if response.stop_reason == "end_turn":
-            history.append({"role": "assistant", "content": content})
+            if response.stop_reason == "tool_use":
+                history.append({"role": "assistant", "content": response.content})
 
-        print()
+                tool_results = []
+                for block in response.content:
+                    if block.type == "tool_use":
+                        retorno = execute_tool(block.name, block.input)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": json.dumps(retorno, ensure_ascii=False)
+                        })
+
+                history.append({"role": "user", "content": tool_results})
+                continue
+
+            if response.stop_reason == "max_tokens":
+                print("\nA resposta foi interrompida antes de ser concluída. Tente novamente.\n")
+                history.pop() 
+                continue
+
+            elif response.stop_reason == "end_turn":
+                history.append({"role": "assistant", "content": content})
+                break
 
 if __name__ == "__main__":
     main()
