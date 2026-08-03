@@ -9,6 +9,9 @@ API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 MODEL = os.environ.get("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 MAX_TOKENS = 4096
+LIMIT_TOKENS = 1024
+LIMIAR_TOKENS = 0.7
+RECENT_MESSAGES = 3
 
 TOOLS = [
     {
@@ -37,6 +40,54 @@ TOOLS = [
 
 client = anthropic.Anthropic(api_key=API_KEY)
 
+def resume_history(history):
+    if len(history) <= RECENT_MESSAGES:
+            return history
+    
+    antigo = history[:-RECENT_MESSAGES]
+    recentes = history[-RECENT_MESSAGES:]
+
+    old_to_resume = antigo + [
+            {"role": "user", "content": "Resuma todas as perguntas e respostas anteriores."}
+        ]
+
+    try:
+        response = client.messages.create(
+            model=MODEL,
+            max_tokens=MAX_TOKENS,
+            system=create_system_cache("Resuma a conversa abaixo de forma concisa, preservando fatos, decisões "
+                            "e contexto necessário para dar continuidade à conversa. Não invente informação."),
+            messages=old_to_resume
+        )
+    except Exception as e:
+        print(f"Ocorreu um erro ao resumir o histórico: {e}")
+        return None
+
+    resumo = next((b.text for b in response.content if b.type == "text"), "")
+
+    if resumo is None:
+        print("Não foi possível obter o resumo do histórico.")
+        return history
+
+    new_history = [
+        {"role": "user", "content": f"[Resumo da conversa]: {resumo}"},
+        {"role": "assistant", "content": "Entendido, vou considerar esse contexto."}
+    ]
+    new_history.extend(recentes)
+    return new_history
+
+def count_tokens(system_prompt, history):
+    try:
+        contagem = client.messages.count_tokens(
+            model=MODEL,
+            system=system_prompt,
+            messages=history
+        )
+        return contagem
+    except Exception as e:
+        print(f"Ocorreu um erro ao contar tokens: {e}")
+        return None
+    
 def create_system_cache(system_prompt):
     return [{
         "type": "text", 
@@ -118,6 +169,17 @@ def main():
 
         history.append({"role": "user", "content": user_prompt})
 
+        contagem = count_tokens(system_prompt, history)
+        if contagem is None:
+            print("Não foi possível contar os tokens. Tente novamente.\n")
+            history.pop()
+            continue
+
+        if contagem.input_tokens > LIMIT_TOKENS * LIMIAR_TOKENS:
+            print("\n♻️ Resumindo histórico da conversa para liberar espaço...\n")
+            history = resume_history(history)
+            continue
+
         while True:
             response, content = use_no_streaming_response(system_prompt, history)
 
@@ -141,7 +203,7 @@ def main():
                 continue
 
             if response.stop_reason == "max_tokens":
-                print("\nA resposta foi interrompida antes de ser concluída. Tente novamente.\n")
+                print("\nA resposta foi interrompida antes de ser concluída por limite de tokens. Tente novamente.\n")
                 history.pop() 
                 continue
 
